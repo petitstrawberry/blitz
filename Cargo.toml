@@ -15,6 +15,7 @@ members = [
     "packages/dioxus-native-dom",
     "packages/blitz-test-harness",
     "apps/browser",
+    "apps/scarlet-browser",
     "apps/browser/persistence",
     "apps/readme",
     "apps/bump",
@@ -287,6 +288,19 @@ wgpu = { workspace = true }
 wgpu_context = { workspace = true }
 rustc-hash = { workspace = true }
 
+[patch.crates-io]
+selectors = { git = "https://github.com/petitstrawberry/stylo", branch = "scarlet" }
+servo_arc = { git = "https://github.com/petitstrawberry/stylo", branch = "scarlet" }
+stylo = { git = "https://github.com/petitstrawberry/stylo", branch = "scarlet" }
+stylo_atoms = { git = "https://github.com/petitstrawberry/stylo", branch = "scarlet" }
+stylo_derive = { git = "https://github.com/petitstrawberry/stylo", branch = "scarlet" }
+stylo_dom = { git = "https://github.com/petitstrawberry/stylo", branch = "scarlet" }
+stylo_malloc_size_of = { git = "https://github.com/petitstrawberry/stylo", branch = "scarlet" }
+stylo_static_prefs = { git = "https://github.com/petitstrawberry/stylo", branch = "scarlet" }
+stylo_traits = { git = "https://github.com/petitstrawberry/stylo", branch = "scarlet" }
+to_shmem = { git = "https://github.com/petitstrawberry/stylo", branch = "scarlet" }
+to_shmem_derive = { git = "https://github.com/petitstrawberry/stylo", branch = "scarlet" }
+
 # [patch.crates-io]
 # anyrender = { path = "../anyrender/crates/anyrender" }
 # anyrender_skia = { path = "../anyrender/crates/anyrender_skia" }
@@ -317,4 +331,3 @@ rustc-hash = { workspace = true }
 # [patch."https://github.com/linebender/parley"]
 # parley = { path = "../parley/parley" }
 # fontique = { path = "../parley/fontique" }
-

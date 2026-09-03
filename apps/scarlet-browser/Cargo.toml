@@ -1,0 +1,22 @@
+[package]
+name = "blitz-scarlet-browser"
+version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "blitz"
+path = "src/main.rs"
+
+[dependencies]
+anyrender = { workspace = true }
+anyrender_vello_cpu = { workspace = true }
+blitz-dom = { workspace = true }
+blitz-html = { workspace = true }
+blitz-paint = { workspace = true }
+blitz-traits = { workspace = true }
+peniko = { workspace = true }
