@@ -1054,6 +1054,7 @@ dependencies = [
  "blitz-paint",
  "blitz-traits",
  "peniko",
+ "sws-client",
 ]
 
 [[package]]
@@ -6995,6 +6996,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "scarlet-abi"
+version = "0.16.0"
+source = "git+https://github.com/petitstrawberry/Scarlet?branch=dev#69aa757aaee99f6a7f4ff1345d05fef75dc0afc9"
+
+[[package]]
+name = "scarlet-os"
+version = "0.16.0"
+source = "git+https://github.com/petitstrawberry/Scarlet?branch=dev#69aa757aaee99f6a7f4ff1345d05fef75dc0afc9"
+dependencies = [
+ "scarlet-abi",
+ "scarlet-sys",
+]
+
+[[package]]
+name = "scarlet-sys"
+version = "0.16.0"
+source = "git+https://github.com/petitstrawberry/Scarlet?branch=dev#69aa757aaee99f6a7f4ff1345d05fef75dc0afc9"
+dependencies = [
+ "scarlet-abi",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7851,6 +7874,20 @@ dependencies = [
  "kurbo",
  "siphasher",
 ]
+
+[[package]]
+name = "sws-client"
+version = "0.1.0"
+source = "git+https://github.com/petitstrawberry/Scarlet?branch=dev#69aa757aaee99f6a7f4ff1345d05fef75dc0afc9"
+dependencies = [
+ "scarlet-os",
+ "sws-protocol",
+]
+
+[[package]]
+name = "sws-protocol"
+version = "0.16.0"
+source = "git+https://github.com/petitstrawberry/Scarlet?branch=dev#69aa757aaee99f6a7f4ff1345d05fef75dc0afc9"
 
 [[package]]
 name = "syn"

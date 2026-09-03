@@ -15,8 +15,11 @@ path = "src/main.rs"
 [dependencies]
 anyrender = { workspace = true }
 anyrender_vello_cpu = { workspace = true }
-blitz-dom = { workspace = true }
+blitz-dom = { workspace = true, features = ["woff"] }
 blitz-html = { workspace = true }
 blitz-paint = { workspace = true }
 blitz-traits = { workspace = true }
 peniko = { workspace = true }
+
+[target.'cfg(target_os = "scarlet")'.dependencies]
+sws-client = { git = "https://github.com/petitstrawberry/Scarlet", branch = "dev", default-features = false, features = ["std"] }
