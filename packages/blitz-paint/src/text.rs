@@ -241,6 +241,7 @@ struct LineDecoration {
 pub(crate) struct DrawTextContext {
     stack: Vec<DecorationStackEntry>,
     path_scratch: Vec<NodeId>,
+    normalized_coords: Vec<i16>,
     deco_boxes: Vec<LineDecoration>,
     win_ascent_ratios: WinAscentCache,
 }
@@ -550,6 +551,7 @@ pub(crate) fn stroke_text<'a>(
     let DrawTextContext {
         stack,
         path_scratch,
+        normalized_coords,
         deco_boxes,
         win_ascent_ratios,
     } = context;
@@ -620,16 +622,14 @@ pub(crate) fn stroke_text<'a>(
                     kurbo::Vec2::default()
                 };
 
-                let normalized_coords: Vec<_> = run
-                    .normalized_coords()
-                    .iter()
-                    .map(|coord| coord.to_bits())
-                    .collect();
+                normalized_coords.clear();
+                normalized_coords
+                    .extend(run.normalized_coords().iter().map(|coord| coord.to_bits()));
                 scene.draw_glyphs(
                     font,
                     font_size,
                     !FONT_EMBOLDEN_ENABLED, // hint
-                    &normalized_coords,
+                    normalized_coords,
                     embolden,
                     Fill::NonZero,
                     &anyrender::Paint::from(text_color),
