@@ -108,7 +108,7 @@ taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "1b918bafcab101dd23
     "calc",
     "detailed_layout_info",
 ] }
-parley = { version = "0.11.1", default-features = false, features = ["std"] }
+parley = { git = "https://github.com/linebender/parley", rev = "dbcdc7d214f28fb7ec16bb17b34bf0aeb85d0fc7", default-features = false, features = ["std"] }
 skrifa = { version = "0.44", default-features = false, features = [
     "std",
 ] } # Should match parley and vello versions
