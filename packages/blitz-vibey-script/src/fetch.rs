@@ -40,10 +40,16 @@ impl ScriptFetcher for DefaultScriptFetcher {
     fn fetch(&self, url: &Url) -> Result<String, FetchError> {
         match url.scheme() {
             "file" => {
-                let path = url
-                    .to_file_path()
-                    .map_err(|_| FetchError::InvalidData(format!("invalid file URL: {url}")))?;
-                std::fs::read_to_string(path).map_err(FetchError::Io)
+                #[cfg(target_os = "scarlet")]
+                return Err(FetchError::UnsupportedScheme("file".to_string()));
+
+                #[cfg(not(target_os = "scarlet"))]
+                {
+                    let path = url
+                        .to_file_path()
+                        .map_err(|_| FetchError::InvalidData(format!("invalid file URL: {url}")))?;
+                    std::fs::read_to_string(path).map_err(FetchError::Io)
+                }
             }
             "data" => {
                 let data_url = data_url::DataUrl::process(url.as_str())
