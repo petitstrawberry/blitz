@@ -394,6 +394,60 @@ const BOOTSTRAP_JS: &str = r#"
         globalThis.Node[name] = value;
         nodeProto[name] = value;
     }
+
+    // `sessionStorage` / `localStorage`: in-memory Web Storage implementations
+    // (the standard getItem/setItem/removeItem/clear/key/length surface).
+    // Values live for the lifetime of the document; a persistent backend can
+    // replace these later without changing the script-facing API.
+    if (typeof globalThis.Storage === "undefined") {
+        const storagePrototype = {
+            get length() {
+                return this._items.size;
+            },
+            key(index) {
+                const position = Number(index) | 0;
+                if (position < 0 || position >= this._items.size) return null;
+                return [...this._items.keys()][position];
+            },
+            getItem(key) {
+                const name = String(key);
+                return this._items.has(name) ? this._items.get(name) : null;
+            },
+            setItem(key, value) {
+                this._items.set(String(key), String(value));
+            },
+            removeItem(key) {
+                this._items.delete(String(key));
+            },
+            clear() {
+                this._items.clear();
+            },
+        };
+        const makeStorage = () =>
+            Object.create(storagePrototype, {
+                _items: { value: new Map(), enumerable: false },
+            });
+        const storageInterface = function Storage() {
+            throw new TypeError("Illegal constructor");
+        };
+        Object.defineProperty(storageInterface, "name", {
+            value: "Storage",
+            configurable: true,
+        });
+        storageInterface.prototype = storagePrototype;
+        Object.defineProperty(storagePrototype, "constructor", {
+            value: storageInterface,
+            writable: true,
+            configurable: true,
+        });
+        globalThis.Storage = storageInterface;
+        if (typeof globalThis.sessionStorage === "undefined") {
+            globalThis.sessionStorage = makeStorage();
+        }
+        if (typeof globalThis.localStorage === "undefined") {
+            globalThis.localStorage = makeStorage();
+        }
+    }
 })();
 "#;
 

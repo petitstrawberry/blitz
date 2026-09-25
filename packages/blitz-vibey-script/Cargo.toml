@@ -46,3 +46,6 @@ blitz-traits = { workspace = true }
 blitz-dom = { workspace = true, features = ["system-fonts"] }
 keyboard-types = { workspace = true }
 url = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("scarlet"))'] }

@@ -55,6 +55,36 @@ fn scripts_run_in_document_order_and_share_globals() {
 }
 
 #[test]
+fn session_and_local_storage_expose_web_storage_apis() {
+    let doc = doc_from_html(
+        r#"
+        <html><body>
+            <div id="root"></div>
+            <script>
+                localStorage.setItem("theme", "dark");
+                sessionStorage.setItem("theme", "light");
+                localStorage.setItem("count", 3);
+                localStorage.removeItem("count");
+                const summary = [
+                    localStorage.getItem("theme"),
+                    sessionStorage.getItem("theme"),
+                    localStorage.getItem("count"),
+                    localStorage.length,
+                    localStorage.key(0),
+                    localStorage instanceof Storage,
+                ].join("|");
+                document.getElementById("root").textContent = summary;
+            </script>
+        </body></html>
+        "#,
+    );
+    assert_eq!(
+        text_of_selector(&doc, "#root"),
+        "dark|light||1|theme|true"
+    );
+}
+
+#[test]
 fn dom_tree_manipulation() {
     let doc = doc_from_html(
         r#"

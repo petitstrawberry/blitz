@@ -223,6 +223,18 @@ impl ScriptDocument {
             .collect()
     }
 
+    /// Specifiers imported by the document's inline module scripts, in
+    /// document order. Embedders with asynchronous networking can prefetch
+    /// these together with [`external_script_urls`](Self::external_script_urls)
+    /// so the synchronous fetcher can serve them from memory.
+    pub fn inline_module_specifiers(&self) -> Vec<String> {
+        self.collect_scripts()
+            .into_iter()
+            .filter(|script| script.is_module && script.src.is_none())
+            .flat_map(|script| crate::specifiers::module_specifiers(&script.inline_text))
+            .collect()
+    }
+
     /// Resolve a script `src` attribute against the document's base URL
     fn resolve_script_url(&self, src: &str) -> Option<Url> {
         match &self.base_url {
