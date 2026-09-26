@@ -7,6 +7,7 @@ use debug_timer::debug_timer;
 use kurbo::{Affine, Rect};
 use parley::LayoutContext;
 use selectors::Element as _;
+use style::computed_values::position::T as Position;
 use style::dom::TDocument;
 
 #[cfg(feature = "parallel-construct")]
@@ -19,7 +20,7 @@ thread_local! {
 }
 
 use style::selector_parser::RestyleDamage;
-use taffy::AvailableSpace;
+use taffy::{AvailableSpace, CoreStyle as _, MaybeResolve};
 
 use crate::{
     BaseDocument,
@@ -106,6 +107,7 @@ impl BaseDocument {
 
         // Next we resolve layout with the data resolved by stlist
         self.resolve_layout();
+        self.resolve_fixed_positioned_boxes();
         timer.record_time("layout");
 
         // Resolve transforms
@@ -395,5 +397,96 @@ impl BaseDocument {
 
         // println!("\n\n");
         // taffy::print_tree(self, root_node_id)
+    }
+
+    /// Resolve viewport-relative sizing and positioning for fixed boxes.
+    ///
+    /// Taffy currently has no distinct `position: fixed` mode, so Stylo's
+    /// fixed value is fed to it as `position: absolute`. That gives the box a
+    /// DOM parent's padding box as its containing block. A fixed box instead
+    /// uses the viewport, which is especially visible for the common
+    /// `top: 0; bottom: 0` pattern used by scrolling sidebars.
+    fn resolve_fixed_positioned_boxes(&mut self) {
+        let scale = self.viewport.scale();
+        let viewport_width = self.viewport.window_size.0 as f32 / scale;
+        let viewport_height = self.viewport.window_size.1 as f32 / scale;
+        let fixed_nodes: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter_map(|(node_id, node)| {
+                node.primary_styles()
+                    .is_some_and(|style| style.clone_position() == Position::Fixed)
+                    .then_some(node_id)
+            })
+            .collect();
+
+        for node_id in fixed_nodes {
+            let (left, right, top, bottom, style_width, style_height) = {
+                let style = self.nodes[node_id].layout_style();
+                let inset = style.inset();
+                let size = style.size();
+                (
+                    inset
+                        .left
+                        .maybe_resolve(viewport_width, crate::layout::resolve_calc_value),
+                    inset
+                        .right
+                        .maybe_resolve(viewport_width, crate::layout::resolve_calc_value),
+                    inset
+                        .top
+                        .maybe_resolve(viewport_height, crate::layout::resolve_calc_value),
+                    inset
+                        .bottom
+                        .maybe_resolve(viewport_height, crate::layout::resolve_calc_value),
+                    size.width
+                        .maybe_resolve(viewport_width, crate::layout::resolve_calc_value),
+                    size.height
+                        .maybe_resolve(viewport_height, crate::layout::resolve_calc_value),
+                )
+            };
+
+            let mut layout = *self.nodes[node_id].final_layout();
+            if style_width.is_none()
+                && let (Some(left), Some(right)) = (left, right)
+            {
+                layout.size.width =
+                    (viewport_width - left - right - layout.margin.left - layout.margin.right)
+                        .max(0.0);
+            }
+            if style_height.is_none()
+                && let (Some(top), Some(bottom)) = (top, bottom)
+            {
+                layout.size.height =
+                    (viewport_height - top - bottom - layout.margin.top - layout.margin.bottom)
+                        .max(0.0);
+            }
+
+            let parent_origin = self.nodes[node_id]
+                .layout_parent
+                .get()
+                .map(|parent_id| self.nodes[parent_id].absolute_position(0.0, 0.0))
+                .unwrap_or(crate::util::Point { x: 0.0, y: 0.0 });
+            if let Some(left) = left {
+                layout.location.x = left + layout.margin.left - parent_origin.x;
+            } else if let Some(right) = right {
+                layout.location.x = viewport_width
+                    - right
+                    - layout.size.width
+                    - layout.margin.right
+                    - parent_origin.x;
+            }
+            if let Some(top) = top {
+                layout.location.y = top + layout.margin.top - parent_origin.y;
+            } else if let Some(bottom) = bottom {
+                layout.location.y = viewport_height
+                    - bottom
+                    - layout.size.height
+                    - layout.margin.bottom
+                    - parent_origin.y;
+            }
+
+            *self.nodes[node_id].unrounded_layout_mut() = layout;
+            *self.nodes[node_id].final_layout_mut() = layout;
+        }
     }
 }

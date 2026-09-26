@@ -184,6 +184,40 @@ fn inner_html() {
 }
 
 #[test]
+fn fixed_box_with_paired_insets_uses_the_viewport() {
+    let mut doc = ScriptDocument::from_html(
+        r#"
+        <html><head><style>
+            html, body { margin: 0; }
+            #parent { width: 100px; height: 100px; margin-left: 100px; }
+            #fixed { position: fixed; left: 10px; right: 20px; top: 30px; bottom: 40px; }
+        </style></head><body>
+            <div id="parent"><div id="fixed"></div></div>
+        </body></html>
+        "#,
+        DocumentConfig {
+            viewport: Some(blitz_traits::shell::Viewport::new(
+                800,
+                600,
+                1.0,
+                blitz_traits::shell::ColorScheme::Light,
+            )),
+            ..Default::default()
+        },
+    );
+    doc.execute_scripts();
+    doc.inner_mut().resolve(0.0);
+
+    let inner = doc.inner();
+    let node_id = inner.query_selector("#fixed").unwrap().unwrap();
+    let node = inner.get_node(node_id).unwrap();
+    let layout = node.final_layout();
+    let position = node.absolute_position(0.0, 0.0);
+    assert_eq!((layout.size.width, layout.size.height), (770.0, 530.0));
+    assert_eq!((position.x, position.y), (10.0, 30.0));
+}
+
+#[test]
 fn click_event_listeners() {
     let mut doc = doc_from_html(
         r#"

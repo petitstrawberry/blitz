@@ -88,6 +88,54 @@ fn fetch_resolves_json_response() {
 }
 
 #[test]
+fn fetch_can_render_ichigo_recent_tracks_widget() {
+    let mut doc = ScriptDocument::from_html(
+        r#"
+        <html><body>
+            <div id="root"><a><ul id="lastfm-placeholder"><li>Loading...</li></ul></a></div>
+            <script>
+                var placeholder,
+                    generateLastfmContent = function (data) {
+                        var list = document.createElement("ul");
+                        list.id = "lastfm-placeholder";
+                        list.innerHTML = `<li class="mostRecentTitle">${data.track[0]["@attr"]?.nowplaying ? "playing" : ""}${data.track[0].name}</li>`;
+                        const count = Math.min(data.track.length, 4);
+                        for (let index = 1; index < count; index++) {
+                            list.innerHTML += `<li class="recentTitle">${data.track[index].name}</li>`;
+                        }
+                        return list;
+                    },
+                    fetchRecentTracks = async function () {
+                        const response = await fetch("https://lastfm.api.ichigo.dev/recenttracks", {
+                            method: "GET",
+                            mode: "cors",
+                            cache: "no-store",
+                        });
+                        const data = await response.json();
+                        var current = document.getElementById("lastfm-placeholder");
+                        const list = generateLastfmContent(data);
+                        current.replaceWith(list);
+                        sessionStorage.setItem("lastfm", JSON.stringify(data));
+                    };
+                fetchRecentTracks();
+            </script>
+        </body></html>
+        "#,
+        DocumentConfig {
+            net_provider: Some(Arc::new(StubNetProvider {
+                status: 200,
+                body: r#"{"track":[{"name":"first"},{"name":"second"},{"name":"third"},{"name":"fourth"}]}"#,
+            })),
+            base_url: Some("https://ichigo.dev/".to_string()),
+            ..Default::default()
+        },
+    );
+    doc.execute_scripts();
+    wait_for_text(&mut doc, "firstsecondthirdfourth");
+    assert!(doc.take_js_errors().is_empty());
+}
+
+#[test]
 fn fetch_http_error_status_resolves_with_ok_false() {
     let mut doc = ScriptDocument::from_html(
         r#"
