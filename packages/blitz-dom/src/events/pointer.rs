@@ -574,6 +574,14 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
     // locally for use within this function
     let drag_mode = doc.drag_mode.take();
 
+    // A platform may coalesce or suppress the last pointer-move before the
+    // button release. Commit the release coordinates as the final selection
+    // endpoint so the focus cannot lag behind the pointer by a character or a
+    // line.
+    if drag_mode == DragMode::Selecting {
+        doc.extend_text_selection_to_point(event.page_x(), event.page_y());
+    }
+
     // Don't dispatch click if we were doing a text selection drag or panning
     // the document with a touch
     let do_click = drag_mode == DragMode::None;
