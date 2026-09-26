@@ -350,6 +350,7 @@ pub struct BaseDocument {
     pub shell_provider: Arc<dyn ShellProvider>,
     /// HTML parser provider. Used to parse HTML for setInnerHTML
     pub html_parser_provider: Arc<dyn HtmlParserProvider>,
+    scripting_enabled: bool,
     /// Carried on every sub-resource `Request` this document issues; aborting
     /// it cancels all in-flight fetches tied to this document. Set via
     /// [`DocumentConfig::abort_signal`].
@@ -482,6 +483,7 @@ impl BaseDocument {
             navigation_provider,
             shell_provider,
             html_parser_provider,
+            scripting_enabled: false,
             abort_signal: config.abort_signal,
             last_mousedown_time: None,
             mousedown_position: taffy::Point::ZERO,
@@ -505,6 +507,7 @@ impl BaseDocument {
             }
             None => doc.add_user_agent_stylesheet(DEFAULT_CSS),
         }
+        doc.set_scripting_enabled(config.scripting_enabled);
 
         // Stylo data on the root node container is needed to render the node
         let stylo_element_data = StyloElementData {
@@ -541,6 +544,27 @@ impl BaseDocument {
     /// Set the Document's html parser provider
     pub fn set_html_parser_provider(&mut self, html_parser_provider: Arc<dyn HtmlParserProvider>) {
         self.html_parser_provider = html_parser_provider;
+    }
+
+    /// Whether document and fragment parsing must treat `<noscript>` as raw text.
+    pub fn scripting_enabled(&self) -> bool {
+        self.scripting_enabled
+    }
+
+    /// Set before parsing HTML. Changing this does not reparse existing nodes.
+    pub fn set_scripting_enabled(&mut self, enabled: bool) {
+        const SCRIPTING_CSS: &str = "noscript { display: none !important; }";
+        if self.scripting_enabled == enabled {
+            return;
+        }
+        self.scripting_enabled = enabled;
+        // Servo's media query backend does not implement `(scripting)` yet,
+        // so install the corresponding UA rule directly for script documents.
+        if enabled {
+            self.add_user_agent_stylesheet(SCRIPTING_CSS);
+        } else {
+            self.remove_user_agent_stylesheet(SCRIPTING_CSS);
+        }
     }
 
     /// Set base url for resolving linked resources (stylesheets, images, fonts, etc)

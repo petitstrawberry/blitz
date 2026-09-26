@@ -55,6 +55,7 @@ impl ScriptDocument {
     /// [`execute_scripts`](Self::execute_scripts) to do so (or rely on the
     /// first `poll` doing it automatically).
     pub fn from_html(html: &str, mut config: DocumentConfig) -> Self {
+        config.scripting_enabled = true;
         if let Some(ss) = &mut config.ua_stylesheets {
             if !ss.iter().any(|s| s == DEFAULT_CSS) {
                 ss.push(String::from(DEFAULT_CSS));
@@ -83,7 +84,8 @@ impl ScriptDocument {
     /// Note: for `innerHTML` support the document must have been created with
     /// an HTML parser provider (e.g. `blitz_html::HtmlProvider`) set in its
     /// [`DocumentConfig`].
-    pub fn from_base_document(doc: BaseDocument) -> Self {
+    pub fn from_base_document(mut doc: BaseDocument) -> Self {
+        doc.set_scripting_enabled(true);
         // The default base url (set when `DocumentConfig.base_url` is `None`) is a
         // meaningless data url. Treat it as "no base url".
         let base_url = Some(doc.base_url().clone()).filter(|url| url.scheme() != "data");

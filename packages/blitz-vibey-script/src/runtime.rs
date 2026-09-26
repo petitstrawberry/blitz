@@ -829,10 +829,13 @@ impl ScriptRuntime {
         ctx.state.borrow_mut().base_url = base_url.cloned();
         // Share the runtime's clock with boa so that `Date` observes the same
         // (possibly virtual) time as timers
-        let clock = ctx.state.borrow().clock.clone();
+        let clock = Rc::new(crate::clock::BoaClockAdapter::new(
+            ctx.state.borrow().clock.clone(),
+        ));
+        let time_origin = clock.base_system_millis as f64;
         let mut context = Context::builder()
             .module_loader(module_loader.clone())
-            .clock(Rc::new(crate::clock::BoaClockAdapter::new(clock)))
+            .clock(clock)
             .build()
             .expect("failed to build JS context");
         context.insert_data(ctx.clone());
@@ -892,6 +895,23 @@ impl ScriptRuntime {
             )
             .build();
         register_global(&mut context, "navigator", navigator.into());
+
+        // High Resolution Time uses the same monotonic clock as timers. This
+        // also keeps performance.now() deterministic in virtual-time documents.
+        let performance = ObjectInitializer::new(&mut context)
+            .function(
+                NativeFunction::from_fn_ptr(performance_now),
+                js_string!("now"),
+                0,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(performance_to_json),
+                js_string!("toJSON"),
+                0,
+            )
+            .property(js_string!("timeOrigin"), time_origin, Attribute::ENUMERABLE)
+            .build();
+        register_global(&mut context, "performance", performance.into());
 
         // Timers and window event listeners
         register_global_fn(&mut context, "setTimeout", 2, set_timeout);
@@ -1139,7 +1159,11 @@ impl ScriptRuntime {
         if due.is_empty() {
             return false;
         }
-        for timer in due {
+        let frame_timestamp = monotonic_timestamp(&self.context);
+        for mut timer in due {
+            if timer.animation_frame {
+                timer.args = vec![JsValue::from(frame_timestamp)];
+            }
             if let Err(error) =
                 timer
                     .callback
@@ -1847,6 +1871,25 @@ fn make_response_object(context: &mut Context, completion: &FetchCompletion) -> 
         .expect("fetch bootstrap helper returned an object")
 }
 
+fn monotonic_timestamp(context: &Context) -> f64 {
+    // Expose 0.1 ms resolution without losing the monotonic time base.
+    (context.clock().now().nanos_since_epoch() / 100_000) as f64 / 10.0
+}
+
+fn performance_now(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    Ok(monotonic_timestamp(context).into())
+}
+
+fn performance_to_json(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let time_origin = this
+        .to_object(context)?
+        .get(js_string!("timeOrigin"), context)?;
+    Ok(ObjectInitializer::new(context)
+        .property(js_string!("timeOrigin"), time_origin, Attribute::all())
+        .build()
+        .into())
+}
+
 fn set_timeout(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let Some((callback, delay, rest)) = timer_args(args, context)? else {
@@ -1882,17 +1925,9 @@ fn request_animation_frame(
     else {
         return Ok(JsValue::from(0));
     };
-    // Approximate the next frame as ~16ms away
-    let timestamp = JsValue::from(16.0);
     let mut state = ctx.state.borrow_mut();
     let now = state.clock.now();
-    let id = state.timers.add(
-        now,
-        Duration::from_millis(16),
-        None,
-        callback,
-        vec![timestamp],
-    );
+    let id = state.timers.add_animation_frame(now, callback);
     Ok(JsValue::from(id as f64))
 }
 

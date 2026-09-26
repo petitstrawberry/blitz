@@ -38,6 +38,88 @@ fn executes_inline_scripts() {
 }
 
 #[test]
+fn performance_uses_the_document_clock_and_stable_time_origin() {
+    let mut doc = ScriptDocument::from_html(
+        r#"<script>
+        globalThis.before = performance.now();
+        globalThis.origin = performance.timeOrigin;
+        __blitz_send_message(String(window.performance === performance));
+        __blitz_send_message(String(before >= 0 && before < 60000));
+        __blitz_send_message(String(Math.abs(Date.now() - origin - before) < 2));
+        __blitz_send_message(String(JSON.parse(JSON.stringify(performance)).timeOrigin === origin));
+        setTimeout(() => {
+            __blitz_send_message(String(Math.abs(performance.now() - before - 25) < 0.2));
+            __blitz_send_message(String(performance.timeOrigin === origin));
+        }, 25);
+        </script>"#,
+        DocumentConfig::default(),
+    )
+    .with_virtual_time();
+    doc.execute_scripts();
+    doc.advance_clock_to(doc.next_timer_deadline().unwrap());
+    doc.poll(None);
+    assert_eq!(doc.take_messages(), vec!["true"; 6]);
+    assert!(doc.take_js_errors().is_empty());
+}
+
+#[test]
+fn animation_frames_use_the_performance_time_base() {
+    let mut doc = ScriptDocument::from_html(
+        r#"<script>
+        requestAnimationFrame(first => {
+            __blitz_send_message(String(Math.abs(first - performance.now()) < 0.1));
+            requestAnimationFrame(second => {
+                __blitz_send_message(String(second > first));
+                __blitz_send_message(String(Math.abs(second - first - 16) < 0.2));
+            });
+        });
+        </script>"#,
+        DocumentConfig::default(),
+    )
+    .with_virtual_time();
+    doc.execute_scripts();
+    for _ in 0..2 {
+        doc.advance_clock_to(doc.next_timer_deadline().unwrap());
+        doc.poll(None);
+    }
+    assert_eq!(doc.take_messages(), vec!["true"; 3]);
+    assert!(doc.take_js_errors().is_empty());
+}
+
+#[test]
+fn scripting_enabled_ignores_noscript_markup_and_styles() {
+    let mut doc = doc_from_html(
+        r#"<!doctype html><html><head>
+        <noscript><style>div { display: none }</style></noscript>
+        </head><body><noscript><div id="disabled">Enable JavaScript</div></noscript>
+        <div id="active">JavaScript works</div><div id="fragment"></div>
+        <script>
+        document.getElementById('fragment').innerHTML = '<noscript><b id="fallback">Disabled</b></noscript>';
+        __blitz_send_message(String(document.getElementById('disabled') === null));
+        __blitz_send_message(String(document.getElementById('fallback') === null));
+        __blitz_send_message(getComputedStyle(document.getElementById('active')).display);
+        __blitz_send_message(getComputedStyle(document.querySelector('body noscript')).display);
+        </script></body></html>"#,
+    );
+    assert_eq!(doc.take_messages(), ["true", "true", "block", "none"]);
+    assert!(doc.take_js_errors().is_empty());
+}
+
+#[test]
+fn scripting_disabled_preserves_noscript_fallback() {
+    let doc = blitz_html::HtmlDocument::from_html(
+        "<!doctype html><noscript><div id='fallback'>Enable JavaScript</div></noscript>",
+        DocumentConfig::default(),
+    );
+    let inner = doc.inner();
+    let fallback = inner.query_selector("#fallback").unwrap().unwrap();
+    assert_eq!(
+        inner.get_node(fallback).unwrap().text_content(),
+        "Enable JavaScript"
+    );
+}
+
+#[test]
 fn scripts_run_in_document_order_and_share_globals() {
     let doc = doc_from_html(
         r#"

@@ -11,6 +11,8 @@ pub(crate) struct Timer {
     pub interval: Option<Duration>,
     pub callback: JsObject,
     pub args: Vec<JsValue>,
+    /// Animation callbacks receive a timestamp at dispatch, not registration.
+    pub animation_frame: bool,
 }
 
 #[derive(Default)]
@@ -36,6 +38,22 @@ impl TimerQueue {
             interval,
             callback,
             args,
+            animation_frame: false,
+        });
+        id
+    }
+
+    pub fn add_animation_frame(&mut self, now: Instant, callback: JsObject) -> u64 {
+        self.next_id += 1;
+        let id = self.next_id;
+        self.timers.push(Timer {
+            id,
+            // Approximate the next frame as ~16ms away.
+            deadline: now + Duration::from_millis(16),
+            interval: None,
+            callback,
+            args: Vec::new(),
+            animation_frame: true,
         });
         id
     }
@@ -71,6 +89,7 @@ impl TimerQueue {
                     interval: timer.interval,
                     callback: timer.callback.clone(),
                     args: timer.args.clone(),
+                    animation_frame: false,
                 });
             }
         }

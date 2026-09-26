@@ -45,6 +45,9 @@ pub struct DocumentConfig {
     pub shell_provider: Option<Arc<dyn ShellProvider>>,
     /// HTML parser provider. Used to parse HTML for setInnerHTML
     pub html_parser_provider: Option<Arc<dyn HtmlParserProvider>>,
+    /// Whether HTML parsing treats scripting as enabled (notably `<noscript>`).
+    /// Script-capable document wrappers enable this before parsing.
+    pub scripting_enabled: bool,
     /// Parley `FontContext`
     pub font_ctx: Option<FontContext>,
     /// The CSS media type used to evaluate `@media` rules.

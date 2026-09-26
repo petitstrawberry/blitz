@@ -100,13 +100,14 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
             Self::parse_xml_into_mutator(mutr, html);
         } else {
             // Parse as HTML
+            let scripting_enabled = mutr.doc.scripting_enabled();
             let mut sink = DocumentHtmlParser::new(mutr);
             sink.is_xml = false;
             let opts = ParseOpts {
                 tokenizer: TokenizerOpts::default(),
                 tree_builder: TreeBuilderOpts {
                     exact_errors: false,
-                    scripting_enabled: false, // Enables parsing of <noscript> tags
+                    scripting_enabled,
                     iframe_srcdoc: false,
                     drop_doctype: true,
                     quirks_mode: QuirksMode::NoQuirks,
@@ -140,13 +141,14 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
         element_id: NodeId,
         html: &str,
     ) {
+        let scripting_enabled = mutr.doc.scripting_enabled();
         let sink = DocumentHtmlParser::new(mutr);
 
         let opts = ParseOpts {
             tokenizer: TokenizerOpts::default(),
             tree_builder: TreeBuilderOpts {
                 exact_errors: false,
-                scripting_enabled: false, // Enables parsing of <noscript> tags
+                scripting_enabled,
                 iframe_srcdoc: false,
                 drop_doctype: true,
                 quirks_mode: QuirksMode::NoQuirks,
