@@ -19,6 +19,13 @@ use boa_engine::parser::Parser;
 /// dynamic imports are still reported. Specifiers are returned unresolved, so
 /// embedders should resolve them against the importing module's URL.
 pub fn module_specifiers(code: &str) -> Vec<String> {
+    // These keywords cannot contain escapes in valid JavaScript. Most classic
+    // scripts have neither, so avoid constructing and resolving a full module
+    // AST a second time just to find that there are no dependencies to fetch.
+    if !code.contains("import") && !code.contains("export") {
+        return Vec::new();
+    }
+
     let mut interner = Interner::new();
     let mut parser = Parser::new(Source::from_bytes(code));
     let mut specifiers: Vec<String> = parser
