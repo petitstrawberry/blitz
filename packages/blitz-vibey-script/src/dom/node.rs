@@ -9,9 +9,10 @@ use boa_engine::value::JsValue;
 use boa_engine::{Context, JsNativeError, JsResult};
 
 use super::{
-    define_accessor, define_method, dom_ctx, js_str, node_id_of_value, node_or_null, node_wrapper,
-    this_node_id, to_rust_string,
+    define_accessor, define_method, define_value, dom_ctx, js_str, node_id_of_value, node_or_null,
+    node_wrapper, this_node_id, to_rust_string,
 };
+use crate::dom::event::EventRef;
 use crate::state::Listener;
 
 pub(crate) fn init_node_proto(proto: &JsObject, context: &mut Context) {
@@ -67,6 +68,7 @@ pub(crate) fn init_node_proto(proto: &JsObject, context: &mut Context) {
         remove_event_listener,
         context,
     );
+    define_method(proto, "dispatchEvent", 1, dispatch_event, context);
 }
 
 pub(crate) fn init_character_data_proto(proto: &JsObject, context: &mut Context) {
@@ -679,4 +681,126 @@ fn remove_event_listener(
     }
 
     Ok(JsValue::undefined())
+}
+
+fn event_flag(event: &JsObject, read: impl FnOnce(&EventRef) -> bool) -> bool {
+    event
+        .downcast_ref::<EventRef>()
+        .is_some_and(|event| read(&event))
+}
+
+fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let target_id = this_node_id(this)?;
+    let event = args
+        .first()
+        .and_then(JsValue::as_object)
+        .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
+    let event_type = to_rust_string(
+        &event.get(boa_engine::js_string!("type"), context)?,
+        context,
+    )?;
+    if event_type.is_empty() {
+        return Err(JsNativeError::error()
+            .with_message("cannot dispatch an uninitialised Event")
+            .into());
+    }
+    let bubbles = event
+        .get(boa_engine::js_string!("bubbles"), context)?
+        .to_boolean();
+
+    let mut chain = vec![target_id];
+    if bubbles {
+        let doc = ctx.doc.borrow();
+        let mut current = target_id;
+        while let Some(parent) = doc.get_node(current).and_then(|node| node.parent) {
+            chain.push(parent);
+            current = parent;
+        }
+    }
+
+    let target: JsValue = node_wrapper(&ctx, target_id, context).into();
+    define_value(&event, "target", target.clone(), context);
+    define_value(&event, "srcElement", target, context);
+    let on_name = boa_engine::JsString::from(format!("on{event_type}"));
+
+    'chain: for node_id in chain {
+        let mut callbacks: Vec<JsObject> = {
+            let mut state = ctx.state.borrow_mut();
+            match state
+                .node_listeners
+                .get_mut(&node_id)
+                .and_then(|listeners| listeners.get_mut(&event_type))
+            {
+                Some(listeners) => {
+                    let callbacks = listeners
+                        .iter()
+                        .map(|listener| listener.callback.clone())
+                        .collect();
+                    listeners.retain(|listener| !listener.once);
+                    callbacks
+                }
+                None => Vec::new(),
+            }
+        };
+        let current_target: JsValue = node_wrapper(&ctx, node_id, context).into();
+        if let Ok(handler) = current_target
+            .as_object()
+            .expect("node wrapper is an object")
+            .get(on_name.clone(), context)
+        {
+            if let Some(handler) = handler.as_object().filter(|handler| handler.is_callable()) {
+                callbacks.push(handler);
+            }
+        }
+        define_value(&event, "currentTarget", current_target.clone(), context);
+
+        for callback in callbacks {
+            if let Err(error) = callback.call(&current_target, &[event.clone().into()], context) {
+                ctx.state
+                    .borrow_mut()
+                    .record_error(format!("Uncaught JS error in event listener: {error}"));
+            }
+            if event_flag(&event, |event| event.stopped_immediate.get()) {
+                break 'chain;
+            }
+        }
+        if !bubbles || event_flag(&event, |event| event.stopped.get()) {
+            break;
+        }
+    }
+
+    if bubbles && !event_flag(&event, |event| event.stopped.get()) {
+        let listeners = {
+            let mut state = ctx.state.borrow_mut();
+            match state.window_listeners.get_mut(&event_type) {
+                Some(listeners) => {
+                    let cloned = listeners.clone();
+                    listeners.retain(|listener| !listener.once);
+                    cloned
+                }
+                None => Vec::new(),
+            }
+        };
+        let global: JsValue = context.global_object().into();
+        define_value(&event, "currentTarget", global.clone(), context);
+        for listener in listeners {
+            if let Err(error) = listener
+                .callback
+                .call(&global, &[event.clone().into()], context)
+            {
+                ctx.state
+                    .borrow_mut()
+                    .record_error(format!("Uncaught JS error in event listener: {error}"));
+            }
+            if event_flag(&event, |event| event.stopped_immediate.get()) {
+                break;
+            }
+        }
+    }
+
+    define_value(&event, "currentTarget", JsValue::null(), context);
+    Ok(JsValue::from(!event_flag(&event, |event| {
+        event.prevented.get()
+    })))
 }

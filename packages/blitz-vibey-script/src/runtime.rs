@@ -35,7 +35,7 @@ use crate::fetch::ScriptFetcher;
 use crate::state::{DomCtx, FetchCompletion, Listener, PendingFetch, ReadyState};
 
 /// JS bootstrap for APIs that are easiest to define in JS
-const BOOTSTRAP_JS: &str = r#"
+const BOOTSTRAP_JS: &str = r##"
 (function () {
     // `window.history`: an in-memory History implementation, sufficient for
     // SPA routers (e.g. React Router): `state`, `pushState`/`replaceState`
@@ -200,17 +200,19 @@ const BOOTSTRAP_JS: &str = r#"
 
     // DOM interface objects (`Node`, `Element`, ...) wired up to the native
     // wrapper prototypes so that constants and `instanceof` checks work.
-    const makeInterface = (name, proto) => {
+    const makeInterface = (name, proto, setConstructor = true) => {
         const iface = function () {
             throw new TypeError("Illegal constructor");
         };
         Object.defineProperty(iface, "name", { value: name, configurable: true });
         iface.prototype = proto;
-        Object.defineProperty(proto, "constructor", {
-            value: iface,
-            writable: true,
-            configurable: true,
-        });
+        if (setConstructor) {
+            Object.defineProperty(proto, "constructor", {
+                value: iface,
+                writable: true,
+                configurable: true,
+            });
+        }
         return iface;
     };
 
@@ -219,6 +221,55 @@ const BOOTSTRAP_JS: &str = r#"
     globalThis.Node = makeInterface("Node", nodeProto);
     globalThis.Document = makeInterface("Document", documentProto);
     globalThis.HTMLDocument = globalThis.Document;
+    globalThis.EventTarget = makeInterface("EventTarget", nodeProto, false);
+
+    const eventProto = Object.getPrototypeOf(document.createEvent("Event"));
+    const makeEvent = (name, customise) => {
+        const iface = function (type, init = {}) {
+            const event = document.createEvent(name);
+            event.initEvent(String(type), Boolean(init.bubbles), Boolean(init.cancelable));
+            event.composed = Boolean(init.composed);
+            if (customise) customise(event, init);
+            return event;
+        };
+        Object.defineProperty(iface, "name", { value: name, configurable: true });
+        iface.prototype = eventProto;
+        return iface;
+    };
+    globalThis.Event = makeEvent("Event");
+    Object.defineProperty(eventProto, "constructor", {
+        value: globalThis.Event,
+        writable: true,
+        configurable: true,
+    });
+    for (const [name, value] of Object.entries({
+        NONE: 0,
+        CAPTURING_PHASE: 1,
+        AT_TARGET: 2,
+        BUBBLING_PHASE: 3,
+    })) {
+        globalThis.Event[name] = value;
+        eventProto[name] = value;
+    }
+    globalThis.CustomEvent = makeEvent("CustomEvent", (event, init) => {
+        event.detail = init.detail === undefined ? null : init.detail;
+    });
+    const eventInitFields = [
+        "view", "detail", "screenX", "screenY", "clientX", "clientY",
+        "ctrlKey", "altKey", "shiftKey", "metaKey", "button", "buttons",
+        "relatedTarget", "key", "code", "location", "repeat", "isComposing",
+        "inputType", "data", "message", "filename", "lineno", "colno", "error",
+    ];
+    for (const name of [
+        "UIEvent", "MouseEvent", "PointerEvent", "KeyboardEvent", "InputEvent",
+        "FocusEvent", "ErrorEvent",
+    ]) {
+        globalThis[name] = makeEvent(name, (event, init) => {
+            for (const field of eventInitFields) {
+                if (field in init) event[field] = init[field];
+            }
+        });
+    }
 
     // Stub constructors for interfaces referenced by `instanceof` probes
     // (e.g. React probes `x instanceof HTMLInputElement`); without them such
@@ -226,12 +277,10 @@ const BOOTSTRAP_JS: &str = r#"
     // blitz-vibey-script elements share a single prototype, so tag-specific
     // interfaces cannot be truthfully modelled: these always answer false.
     for (const name of [
-        "EventTarget", "CharacterData", "Text", "Comment", "DocumentFragment",
+        "CharacterData", "Text", "Comment", "DocumentFragment",
         "HTMLInputElement", "HTMLTextAreaElement", "HTMLSelectElement",
         "HTMLButtonElement", "HTMLAnchorElement", "HTMLIFrameElement",
-        "HTMLImageElement", "SVGElement",
-        "Event", "CustomEvent", "UIEvent", "MouseEvent", "PointerEvent",
-        "KeyboardEvent", "InputEvent", "FocusEvent",
+        "SVGElement",
     ]) {
         if (typeof globalThis[name] === "undefined") {
             globalThis[name] = makeInterface(name, {});
@@ -241,6 +290,114 @@ const BOOTSTRAP_JS: &str = r#"
         const elementProto = Object.getPrototypeOf(document.documentElement);
         globalThis.Element = makeInterface("Element", elementProto);
         globalThis.HTMLElement = globalThis.Element;
+
+        // The legacy `Image()` constructor creates an unattached <img>. Give
+        // those wrappers a tag-specific prototype so reflected image fields and
+        // `instanceof HTMLImageElement` work without changing other elements.
+        const imageProto = Object.create(elementProto);
+        globalThis.HTMLImageElement = makeInterface("HTMLImageElement", imageProto);
+        for (const name of ["src", "alt"]) {
+            Object.defineProperty(imageProto, name, {
+                configurable: true,
+                enumerable: true,
+                get() {
+                    return this.getAttribute(name) || "";
+                },
+                set(value) {
+                    this.setAttribute(name, String(value));
+                },
+            });
+        }
+        for (const name of ["width", "height"]) {
+            Object.defineProperty(imageProto, name, {
+                configurable: true,
+                enumerable: true,
+                get() {
+                    const value = Number(this.getAttribute(name));
+                    return Number.isFinite(value) && value >= 0 ? value : 0;
+                },
+                set(value) {
+                    const number = Number(value);
+                    this.setAttribute(name, String(Number.isFinite(number) && number >= 0 ? number : 0));
+                },
+            });
+        }
+        const imageInterface = function Image(width, height) {
+            const image = document.createElement("img");
+            Object.setPrototypeOf(image, imageProto);
+            if (width !== undefined) image.width = width;
+            if (height !== undefined) image.height = height;
+            return image;
+        };
+        imageInterface.prototype = imageProto;
+        globalThis.Image = imageInterface;
+
+        // A small 2D context is enough for feature detection and for the colour
+        // normalisation used by the Web Animations polyfill. Blitz does not yet
+        // expose a script-paintable canvas.
+        const namedColors = {
+            black: [0, 0, 0, 255],
+            white: [255, 255, 255, 255],
+            red: [255, 0, 0, 255],
+            green: [0, 128, 0, 255],
+            blue: [0, 0, 255, 255],
+            transparent: [0, 0, 0, 0],
+        };
+        const parseCanvasColor = (input) => {
+            const value = String(input).trim().toLowerCase();
+            if (namedColors[value]) return namedColors[value].slice();
+            let match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value);
+            if (match) {
+                let hex = match[1];
+                if (hex.length === 3) hex = [...hex].map((c) => c + c).join("");
+                return [
+                    parseInt(hex.slice(0, 2), 16),
+                    parseInt(hex.slice(2, 4), 16),
+                    parseInt(hex.slice(4, 6), 16),
+                    255,
+                ];
+            }
+            match = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/.exec(value);
+            if (!match) return null;
+            const clampByte = (number) => Math.max(0, Math.min(255, Math.round(Number(number))));
+            return [
+                clampByte(match[1]),
+                clampByte(match[2]),
+                clampByte(match[3]),
+                match[4] === undefined ? 255 : clampByte(Number(match[4]) * 255),
+            ];
+        };
+        Object.defineProperty(elementProto, "getContext", {
+            configurable: true,
+            writable: true,
+            value(type) {
+                if (this.localName !== "canvas" || String(type) !== "2d") return null;
+                if (this.__blitz2dContext) return this.__blitz2dContext;
+                let rgba = namedColors.black.slice();
+                let fillStyle = "#000000";
+                const context2d = {
+                    get fillStyle() {
+                        return fillStyle;
+                    },
+                    set fillStyle(value) {
+                        const parsed = parseCanvasColor(value);
+                        if (!parsed) return;
+                        rgba = parsed;
+                        fillStyle = `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, ${rgba[3] / 255})`;
+                    },
+                    fillRect() {},
+                    clearRect() {},
+                    getImageData() {
+                        return { data: new Uint8ClampedArray(rgba) };
+                    },
+                    measureText(text) {
+                        return { width: String(text).length * 8 };
+                    },
+                };
+                Object.defineProperty(this, "__blitz2dContext", { value: context2d });
+                return context2d;
+            },
+        });
 
         // `classList` (DOMTokenList), backed by the `class` attribute
         Object.defineProperty(elementProto, "classList", {
@@ -550,7 +707,7 @@ const BOOTSTRAP_JS: &str = r#"
         }
     }
 })();
-"#;
+"##;
 
 /// Record an unhandled JavaScript error in the runtime state, for the embedder
 /// to collect via [`ScriptDocument::take_js_errors`](crate::ScriptDocument::take_js_errors)
@@ -761,6 +918,7 @@ impl ScriptRuntime {
             2,
             window_remove_event_listener,
         );
+        register_global_fn(&mut context, "dispatchEvent", 1, window_dispatch_event);
 
         // Embedder message channel (see `ScriptDocument::take_messages`)
         register_global_fn(&mut context, "__blitz_send_message", 1, send_message);
@@ -1920,4 +2078,74 @@ fn window_remove_event_listener(
         listeners.retain(|l| !JsObject::equals(&l.callback, &callback));
     }
     Ok(JsValue::undefined())
+}
+
+fn window_dispatch_event(
+    _: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let event = args
+        .first()
+        .and_then(JsValue::as_object)
+        .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
+    let event_type = to_rust_string(&event.get(js_string!("type"), context)?, context)?;
+    if event_type.is_empty() {
+        return Err(JsNativeError::error()
+            .with_message("cannot dispatch an uninitialised Event")
+            .into());
+    }
+
+    let listeners = {
+        let mut state = ctx.state.borrow_mut();
+        match state.window_listeners.get_mut(&event_type) {
+            Some(listeners) => {
+                let callbacks = listeners
+                    .iter()
+                    .map(|listener| listener.callback.clone())
+                    .collect::<Vec<_>>();
+                listeners.retain(|listener| !listener.once);
+                callbacks
+            }
+            None => Vec::new(),
+        }
+    };
+    let global: JsValue = context.global_object().into();
+    crate::dom::define_value(&event, "target", global.clone(), context);
+    crate::dom::define_value(&event, "srcElement", global.clone(), context);
+    crate::dom::define_value(&event, "currentTarget", global.clone(), context);
+
+    for callback in listeners {
+        if let Err(error) = callback.call(&global, &[event.clone().into()], context) {
+            report_js_error(&ctx, "event listener", &error);
+        }
+        if event
+            .downcast_ref::<EventRef>()
+            .is_some_and(|event| event.stopped_immediate.get())
+        {
+            break;
+        }
+    }
+
+    if !event
+        .downcast_ref::<EventRef>()
+        .is_some_and(|event| event.stopped_immediate.get())
+    {
+        let handler = global
+            .as_object()
+            .expect("window is an object")
+            .get(JsString::from(format!("on{event_type}")), context)?;
+        if let Some(handler) = handler.as_object().filter(|handler| handler.is_callable()) {
+            if let Err(error) = handler.call(&global, &[event.clone().into()], context) {
+                report_js_error(&ctx, "event listener", &error);
+            }
+        }
+    }
+
+    crate::dom::define_value(&event, "currentTarget", JsValue::null(), context);
+    let prevented = event
+        .downcast_ref::<EventRef>()
+        .is_some_and(|event| event.prevented.get());
+    Ok(JsValue::from(!prevented))
 }

@@ -24,6 +24,9 @@ pub(crate) struct EventRef {
 }
 
 pub(crate) fn init_event_proto(proto: &JsObject, context: &mut Context) {
+    define_method(proto, "initEvent", 3, init_event, context);
+    define_method(proto, "initCustomEvent", 4, init_custom_event, context);
+    define_method(proto, "initMouseEvent", 15, init_mouse_event, context);
     define_method(proto, "preventDefault", 0, prevent_default, context);
     define_method(proto, "stopPropagation", 0, stop_propagation, context);
     define_method(
@@ -45,6 +48,95 @@ pub(crate) fn init_event_proto(proto: &JsObject, context: &mut Context) {
     // key/mouse event into React throws "not a callable function". Reads back
     // the event's own `ctrlKey`/`shiftKey`/`altKey`/`metaKey` fields.
     define_method(proto, "getModifierState", 1, get_modifier_state, context);
+    define_method(proto, "composedPath", 0, composed_path, context);
+}
+
+fn set_event_field(
+    event: &JsObject,
+    name: &str,
+    value: JsValue,
+    context: &mut Context,
+) -> JsResult<()> {
+    event.set(boa_engine::JsString::from(name), value, true, context)?;
+    Ok(())
+}
+
+fn init_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let event = this
+        .as_object()
+        .ok_or_else(|| boa_engine::JsNativeError::typ().with_message("invalid Event receiver"))?;
+    let event_type = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    set_event_field(&event, "type", js_str(&event_type), context)?;
+    set_event_field(
+        &event,
+        "bubbles",
+        JsValue::from(args.get(1).is_some_and(JsValue::to_boolean)),
+        context,
+    )?;
+    set_event_field(
+        &event,
+        "cancelable",
+        JsValue::from(args.get(2).is_some_and(JsValue::to_boolean)),
+        context,
+    )?;
+    if let Some(event_ref) = event.downcast_ref::<EventRef>() {
+        event_ref.prevented.set(false);
+        event_ref.stopped.set(false);
+        event_ref.stopped_immediate.set(false);
+    }
+    Ok(JsValue::undefined())
+}
+
+fn init_custom_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    init_event(this, args, context)?;
+    let event = this.as_object().expect("init_event validated the receiver");
+    set_event_field(
+        &event,
+        "detail",
+        args.get(3).cloned().unwrap_or(JsValue::null()),
+        context,
+    )?;
+    Ok(JsValue::undefined())
+}
+
+fn init_mouse_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    init_event(this, args, context)?;
+    let event = this.as_object().expect("init_event validated the receiver");
+    const FIELDS: &[(&str, usize)] = &[
+        ("view", 3),
+        ("detail", 4),
+        ("screenX", 5),
+        ("screenY", 6),
+        ("clientX", 7),
+        ("clientY", 8),
+        ("ctrlKey", 9),
+        ("altKey", 10),
+        ("shiftKey", 11),
+        ("metaKey", 12),
+        ("button", 13),
+        ("relatedTarget", 14),
+    ];
+    for &(name, index) in FIELDS {
+        set_event_field(
+            &event,
+            name,
+            args.get(index).cloned().unwrap_or(JsValue::undefined()),
+            context,
+        )?;
+    }
+    Ok(JsValue::undefined())
+}
+
+fn composed_path(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let event = this
+        .as_object()
+        .ok_or_else(|| boa_engine::JsNativeError::typ().with_message("invalid Event receiver"))?;
+    let target = event.get(boa_engine::js_string!("target"), context)?;
+    let path = boa_engine::object::builtins::JsArray::new(context)?;
+    if !target.is_null_or_undefined() {
+        path.push(target, context)?;
+    }
+    Ok(path.into())
 }
 
 fn get_modifier_state(

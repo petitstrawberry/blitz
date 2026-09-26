@@ -637,3 +637,74 @@ fn interface_constructor_globals() {
         "function,function,function,function|false|true"
     );
 }
+
+#[test]
+fn image_constructor_and_canvas_context_cover_feature_detection() {
+    let doc = doc_from_html(
+        r##"
+        <html><body>
+            <div id="out"></div>
+            <script>
+                const image = new Image(320, 180);
+                image.src = "https://example.test/cover.png";
+                image.alt = "cover";
+
+                const canvas = document.createElement("canvas");
+                const context = canvas.getContext("2d");
+                context.fillStyle = "#1a2b3c";
+                context.fillRect(0, 0, 1, 1);
+                const pixel = [...context.getImageData(0, 0, 1, 1).data].join(",");
+
+                document.getElementById("out").textContent = [
+                    image instanceof Image,
+                    image instanceof HTMLImageElement,
+                    image.localName,
+                    image.width,
+                    image.height,
+                    image.alt,
+                    pixel,
+                ].join("|");
+            </script>
+        </body></html>
+        "##,
+    );
+    assert_eq!(
+        text_of_selector(&doc, "#out"),
+        "true|true|img|320|180|cover|26,43,60,255"
+    );
+}
+
+#[test]
+fn script_created_events_dispatch_to_nodes_and_window() {
+    let doc = doc_from_html(
+        r#"
+        <html><body>
+            <button id="button"></button>
+            <div id="out"></div>
+            <script>
+                const log = [];
+                const button = document.getElementById("button");
+                button.addEventListener("ready", (event) => {
+                    log.push(`button:${event.detail}:${event.target.id}`);
+                    event.preventDefault();
+                });
+                window.addEventListener("ready", (event) => {
+                    log.push(`window:${event.detail}:${event.target === window}`);
+                });
+                const nodeResult = button.dispatchEvent(new CustomEvent("ready", {
+                    bubbles: true,
+                    cancelable: true,
+                    detail: 7,
+                }));
+                const windowResult = window.dispatchEvent(new CustomEvent("ready", { detail: 9 }));
+                document.getElementById("out").textContent =
+                    `${nodeResult}|${windowResult}|${log.join(",")}`;
+            </script>
+        </body></html>
+        "#,
+    );
+    assert_eq!(
+        text_of_selector(&doc, "#out"),
+        "false|true|button:7:button,window:7:false,window:9:true"
+    );
+}

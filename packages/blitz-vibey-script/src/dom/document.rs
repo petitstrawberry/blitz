@@ -58,6 +58,7 @@ pub(crate) fn init_document_proto(proto: &JsObject, context: &mut Context) {
     define_method(proto, "createElementNS", 2, create_element_ns, context);
     define_method(proto, "createTextNode", 1, create_text_node, context);
     define_method(proto, "createComment", 1, create_comment, context);
+    define_method(proto, "createEvent", 1, create_event, context);
     define_method(
         proto,
         "createDocumentFragment",
@@ -202,6 +203,12 @@ fn create_comment(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         doc.mutate().create_comment_node(&text)
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
+}
+
+fn create_event(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let _ = this_node_id(this)?;
+    Ok(super::event::create_event(&ctx, "", false, false, &JsValue::null(), context).into())
 }
 
 fn create_document_fragment(
