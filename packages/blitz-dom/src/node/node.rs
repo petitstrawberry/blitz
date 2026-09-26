@@ -1481,32 +1481,6 @@ impl Node {
     /// to be relative to this inline root's content box.
     /// Returns Some(byte_offset) if the point hits text, None otherwise.
     pub fn text_offset_at_point(&self, x: f32, y: f32) -> Option<usize> {
-        let (range, side, is_rtl, is_explicit_break) = self.text_cluster_at_point(x, y)?;
-
-        // Determine byte offset based on which side of the cluster was clicked
-        // For LTR text: left side = start of cluster, right side = end of cluster
-        // For RTL text: left side = end of cluster, right side = start of cluster
-        // Also, explicit line breaks should always use start to avoid cursor appearing on next line
-        let is_leading = side == ClusterSide::Left;
-        Some(if is_rtl {
-            if is_leading { range.end } else { range.start }
-        } else if is_leading || is_explicit_break {
-            range.start
-        } else {
-            range.end
-        })
-    }
-
-    /// Get the grapheme cluster under a point in this inline root.
-    ///
-    /// Selection drags need the full cluster range rather than only the nearest
-    /// caret edge so that the character under either drag endpoint is included
-    /// consistently in both drag directions.
-    pub(crate) fn text_cluster_at_point(
-        &self,
-        x: f32,
-        y: f32,
-    ) -> Option<(core::ops::Range<usize>, ClusterSide, bool, bool)> {
         if !self.flags.is_inline_root() {
             return None;
         }
@@ -1518,12 +1492,28 @@ impl Node {
 
         // Use Parley's cluster hit testing (from_point is more forgiving than from_point_exact)
         let (cluster, side) = Cluster::from_point(layout, x * scale, y * scale)?;
-        Some((
-            cluster.text_range(),
-            side,
-            cluster.is_rtl(),
-            cluster.is_line_break() == Some(BreakReason::Explicit),
-        ))
+
+        // Determine byte offset based on which side of the cluster was clicked
+        // For LTR text: left side = start of cluster, right side = end of cluster
+        // For RTL text: left side = end of cluster, right side = start of cluster
+        // Also, explicit line breaks should always use start to avoid cursor appearing on next line
+        let is_leading = side == ClusterSide::Left;
+        let offset = if cluster.is_rtl() {
+            if is_leading {
+                cluster.text_range().end
+            } else {
+                cluster.text_range().start
+            }
+        } else {
+            // LTR text
+            if is_leading || cluster.is_line_break() == Some(BreakReason::Explicit) {
+                cluster.text_range().start
+            } else {
+                cluster.text_range().end
+            }
+        };
+
+        Some(offset)
     }
 
     /// Computes the Document-relative coordinates of the `Node`

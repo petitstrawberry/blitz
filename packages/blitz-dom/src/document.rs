@@ -2458,19 +2458,6 @@ impl BaseDocument {
         Some((inline_root.id, byte_offset))
     }
 
-    fn find_text_cluster_at_point(
-        &self,
-        x: f32,
-        y: f32,
-    ) -> Option<(NodeId, core::ops::Range<usize>, usize)> {
-        let hit = self.hit(x, y)?;
-        let hit_node = self.get_node(hit.node_id)?;
-        let inline_root = hit_node.inline_root_ancestor()?;
-        let (range, _, _, _) = inline_root.text_cluster_at_point(hit.x, hit.y)?;
-        let caret = inline_root.text_offset_at_point(hit.x, hit.y)?;
-        Some((inline_root.id, range, caret))
-    }
-
     /// Set the text selection range (creates a new selection from anchor to focus)
     pub fn set_text_selection(
         &mut self,
@@ -2551,44 +2538,19 @@ impl BaseDocument {
     }
 
     /// Extend text selection to the given point. Returns true if selection was updated.
-    /// Both graphemes under the drag endpoints are included, independent of drag direction.
+    /// This is a convenience method that combines find_text_position and update_selection_focus.
     pub fn extend_text_selection_to_point(&mut self, x: f32, y: f32) -> bool {
         if !self.text_selection.anchor.is_some() {
             return false;
         }
 
-        let Some((focus_node, focus_range, focus_caret)) = self.find_text_cluster_at_point(x, y)
-        else {
-            return false;
-        };
-        let Some((anchor_node, anchor_range, anchor_caret)) =
-            self.find_text_cluster_at_point(self.mousedown_position.x, self.mousedown_position.y)
-        else {
-            self.update_selection_focus(focus_node, focus_caret);
+        if let Some((node, offset)) = self.find_text_position(x, y) {
+            self.update_selection_focus(node, offset);
             self.shell_provider.request_redraw();
-            return true;
-        };
-
-        let order = if anchor_node == focus_node {
-            focus_range
-                .start
-                .cmp(&anchor_range.start)
-                .then_with(|| focus_caret.cmp(&anchor_caret))
-                .then_with(|| {
-                    x.partial_cmp(&self.mousedown_position.x)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
+            true
         } else {
-            self.compare_document_order(focus_node, anchor_node)
-        };
-
-        if order == std::cmp::Ordering::Less {
-            self.set_text_selection(anchor_node, anchor_range.end, focus_node, focus_range.start);
-        } else {
-            self.set_text_selection(anchor_node, anchor_range.start, focus_node, focus_range.end);
+            false
         }
-        self.shell_provider.request_redraw();
-        true
     }
 
     /// Find the Nth anonymous block under a parent.
