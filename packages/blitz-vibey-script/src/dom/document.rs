@@ -32,6 +32,22 @@ pub(crate) fn init_document_proto(proto: &JsObject, context: &mut Context) {
     define_accessor(proto, "defaultView", Some(default_view), None, context);
     define_accessor(proto, "title", Some(title), None, context);
     define_accessor(proto, "readyState", Some(ready_state), None, context);
+    define_accessor(proto, "cookie", Some(cookie), Some(set_cookie), context);
+    define_accessor(
+        proto,
+        "location",
+        Some(crate::location::get),
+        Some(crate::location::assign),
+        context,
+    );
+    define_accessor(proto, "URL", Some(crate::location::href), None, context);
+    define_accessor(
+        proto,
+        "documentURI",
+        Some(crate::location::href),
+        None,
+        context,
+    );
     define_accessor(
         proto,
         "childElementCount",
@@ -154,6 +170,32 @@ fn ready_state(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult
     let _ = this_node_id(this)?;
     let ready_state = ctx.state.borrow().ready_state;
     Ok(super::js_str(ready_state.as_str()))
+}
+
+fn cookie(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = this_node_id(this)?;
+    let ctx = dom_ctx(context)?;
+    let value = ctx
+        .state
+        .borrow()
+        .location_url
+        .as_ref()
+        .map(|url| ctx.doc.borrow().net_provider.document_cookies(url))
+        .unwrap_or_default();
+    Ok(super::js_str(&value))
+}
+
+fn set_cookie(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = this_node_id(this)?;
+    let value = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let ctx = dom_ctx(context)?;
+    if let Some(url) = &ctx.state.borrow().location_url {
+        ctx.doc
+            .borrow()
+            .net_provider
+            .set_document_cookie(url, &value);
+    }
+    Ok(JsValue::undefined())
 }
 
 // === Node creation ===

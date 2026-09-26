@@ -19,6 +19,17 @@ pub use url::Url;
 pub trait NetProvider: Send + Sync + 'static {
     fn fetch(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>);
 
+    /// Cookies visible to `document.cookie` at this document URL. Implementations
+    /// must enforce domain/path/secure scope and exclude HttpOnly cookies.
+    fn document_cookies(&self, _url: &Url) -> String {
+        String::new()
+    }
+
+    /// Store a cookie received from a non-HTTP API (`document.cookie`). This must
+    /// neither create nor overwrite HttpOnly cookies. HTTP and script cookies
+    /// should use the same store so navigation and subrequests see updates.
+    fn set_document_cookie(&self, _url: &Url, _cookie: &str) {}
+
     /// Whether this provider is a no-op (e.g. `DummyNetProvider`) that will never
     /// deliver resources. When true, callers must NOT register resources as
     /// "pending critical" — doing so blocks painting forever, since the

@@ -112,6 +112,9 @@ pub(crate) struct RuntimeState {
     pub uncaught_errors: Vec<String>,
     /// The document's base URL, used to resolve relative `fetch()` URLs.
     pub base_url: Option<Url>,
+    /// The current document URL, separate from pending Location navigations.
+    pub location_url: Option<Url>,
+    pub location_object: Option<JsObject>,
 }
 
 /// Maximum number of errors stored in [`RuntimeState::uncaught_errors`] between

@@ -42,20 +42,8 @@ const BOOTSTRAP_JS: &str = r##"
     // (which update `location`) and no-op `go`/`back`/`forward`. There is no
     // real session history, so `popstate` events are never fired.
     if (typeof globalThis.history === "undefined") {
-        const updateLocationFromUrl = (url) => {
-            try {
-                const resolved = new URL(String(url), location.href);
-                location.href = resolved.href;
-                location.protocol = resolved.protocol;
-                location.host = resolved.host;
-                location.hostname = resolved.hostname;
-                location.pathname = resolved.pathname;
-                location.search = resolved.search;
-                location.hash = resolved.hash;
-            } catch (e) {
-                // Unresolvable URL (e.g. no base): leave location unchanged
-            }
-        };
+        const updateLocationFromUrl = globalThis.__blitz_history_url;
+        delete globalThis.__blitz_history_url;
         let historyState = null;
         globalThis.history = {
             length: 1,
@@ -64,12 +52,12 @@ const BOOTSTRAP_JS: &str = r##"
                 return historyState;
             },
             pushState(state, _unused, url) {
-                historyState = state;
                 if (url !== undefined && url !== null) updateLocationFromUrl(url);
+                historyState = state;
             },
             replaceState(state, _unused, url) {
-                historyState = state;
                 if (url !== undefined && url !== null) updateLocationFromUrl(url);
+                historyState = state;
             },
             go() {},
             back() {},
@@ -827,6 +815,7 @@ impl ScriptRuntime {
         });
         let ctx = DomCtx::new(doc);
         ctx.state.borrow_mut().base_url = base_url.cloned();
+        ctx.state.borrow_mut().location_url = base_url.cloned();
         // Share the runtime's clock with boa so that `Date` observes the same
         // (possibly virtual) time as timers
         let clock = Rc::new(crate::clock::BoaClockAdapter::new(
@@ -883,8 +872,13 @@ impl ScriptRuntime {
         register_global(&mut context, "opener", JsValue::null());
 
         // `location`
-        let location = build_location(base_url, &mut context);
-        register_global(&mut context, "location", location);
+        crate::location::register(&mut context);
+        register_global_fn(
+            &mut context,
+            "__blitz_history_url",
+            1,
+            crate::location::history_url,
+        );
 
         // `navigator`
         let navigator = ObjectInitializer::new(&mut context)
@@ -1567,64 +1561,6 @@ fn register_global_fn(
             NativeFunction::from_fn_ptr(body),
         )
         .expect("failed to register global function");
-}
-
-fn build_location(base_url: Option<&Url>, context: &mut Context) -> JsValue {
-    let (href, protocol, host, pathname, search, hash, origin) = match base_url {
-        Some(url) => (
-            url.to_string(),
-            format!("{}:", url.scheme()),
-            url.host_str().unwrap_or_default().to_string(),
-            url.path().to_string(),
-            url.query().map(|q| format!("?{q}")).unwrap_or_default(),
-            url.fragment().map(|f| format!("#{f}")).unwrap_or_default(),
-            url.origin().ascii_serialization(),
-        ),
-        None => (
-            "about:blank".to_string(),
-            "about:".to_string(),
-            String::new(),
-            "blank".to_string(),
-            String::new(),
-            String::new(),
-            "null".to_string(),
-        ),
-    };
-    ObjectInitializer::new(context)
-        .property(js_string!("href"), JsString::from(href), Attribute::all())
-        .property(
-            js_string!("protocol"),
-            JsString::from(protocol),
-            Attribute::all(),
-        )
-        .property(
-            js_string!("host"),
-            JsString::from(host.clone()),
-            Attribute::all(),
-        )
-        .property(
-            js_string!("hostname"),
-            JsString::from(host),
-            Attribute::all(),
-        )
-        .property(
-            js_string!("pathname"),
-            JsString::from(pathname),
-            Attribute::all(),
-        )
-        .property(
-            js_string!("search"),
-            JsString::from(search),
-            Attribute::all(),
-        )
-        .property(js_string!("hash"), JsString::from(hash), Attribute::all())
-        .property(
-            js_string!("origin"),
-            JsString::from(origin),
-            Attribute::all(),
-        )
-        .build()
-        .into()
 }
 
 // === Timer + window listener native functions ===

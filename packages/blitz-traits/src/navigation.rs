@@ -33,6 +33,9 @@ pub struct NavigationOptions {
     pub method: Method,
 
     pub document_resource: Body,
+
+    /// Replace the current session-history entry rather than adding one.
+    pub replace: bool,
 }
 
 impl NavigationOptions {
@@ -43,6 +46,7 @@ impl NavigationOptions {
             source_document,
             method: Method::GET,
             document_resource: Body::Empty,
+            replace: false,
         }
     }
     pub fn set_document_resource(mut self, document_resource: Body) -> Self {
