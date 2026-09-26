@@ -2,16 +2,21 @@
 //! dispatches events / timers into JavaScript.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use blitz_dom::{BaseDocument, NodeId};
 use blitz_traits::events::{DomEvent, DomEventData, EventState};
+use blitz_traits::net::http::{HeaderMap, HeaderName, HeaderValue, header};
+use blitz_traits::net::{Body, Bytes, NetHandler, Request, http::Method};
+use blitz_traits::shell::ShellProvider;
 use boa_engine::builtins::promise::PromiseState;
 use boa_engine::module::{Module, ModuleLoader, ModuleRequest, Referrer};
+use boa_engine::object::builtins::JsPromise;
 use boa_engine::object::{JsObject, ObjectInitializer};
-use boa_engine::property::Attribute;
+use boa_engine::property::{Attribute, PropertyKey};
 use boa_engine::value::JsValue;
 use boa_engine::{
     Context, JsError, JsNativeError, JsResult, JsString, NativeFunction, Source, js_string,
@@ -27,7 +32,7 @@ use crate::dom::{
     NodeRef, dom_ctx, node_id_of_value, node_wrapper, to_rust_string, wrap_style_object,
 };
 use crate::fetch::ScriptFetcher;
-use crate::state::{DomCtx, Listener, ReadyState};
+use crate::state::{DomCtx, FetchCompletion, Listener, PendingFetch, ReadyState};
 
 /// JS bootstrap for APIs that are easiest to define in JS
 const BOOTSTRAP_JS: &str = r#"
@@ -395,6 +400,102 @@ const BOOTSTRAP_JS: &str = r#"
         nodeProto[name] = value;
     }
 
+    // `Headers` and `Response`: the minimal Fetch API surface. `fetch` itself
+    // is a native function which settles promises with objects built by
+    // `__blitz_make_response`.
+    if (typeof globalThis.Headers === "undefined") {
+        const headersPrototype = {
+            get(name) {
+                const key = String(name).toLowerCase();
+                return Object.prototype.hasOwnProperty.call(this, key) ? this[key] : null;
+            },
+            has(name) {
+                return this.get(String(name)) !== null;
+            },
+            set(name, value) {
+                this[String(name).toLowerCase()] = String(value);
+            },
+            append(name, value) {
+                const key = String(name).toLowerCase();
+                this[key] =
+                    this.get(key) === null
+                        ? String(value)
+                        : this[key] + ", " + String(value);
+            },
+            delete(name) {
+                delete this[String(name).toLowerCase()];
+            },
+            forEach(callback, thisArg) {
+                for (const key of Object.keys(this)) {
+                    callback.call(thisArg, this[key], key, this);
+                }
+            },
+            entries() {
+                return Object.entries(this)[Symbol.iterator]();
+            },
+            keys() {
+                return Object.keys(this)[Symbol.iterator]();
+            },
+            values() {
+                return Object.values(this)[Symbol.iterator]();
+            },
+        };
+        const headersInterface = function Headers(init) {
+            const headers = Object.create(headersPrototype);
+            if (init && typeof init === "object" && !Array.isArray(init)) {
+                for (const [name, value] of Object.entries(init)) {
+                    headers.set(name, value);
+                }
+            }
+            return headers;
+        };
+        Object.defineProperty(headersInterface, "name", {
+            value: "Headers",
+            configurable: true,
+        });
+        headersInterface.prototype = headersPrototype;
+        globalThis.Headers = headersInterface;
+    }
+
+    if (typeof globalThis.Response === "undefined") {
+        const responsePrototype = {
+            text() {
+                return Promise.resolve(this._body);
+            },
+            json() {
+                return this.text().then((text) => JSON.parse(text));
+            },
+            arrayBuffer() {
+                const bytes = new TextEncoder().encode(this._body);
+                return Promise.resolve(bytes.buffer);
+            },
+            clone() {
+                return makeResponse(this.status, this.url, this._body, this.headers);
+            },
+        };
+        const makeResponse = (status, url, body, headers) => {
+            const response = Object.create(responsePrototype);
+            response.status = Number(status);
+            response.statusText = "";
+            response.ok = response.status >= 200 && response.status < 300;
+            response.url = String(url);
+            response._body = String(body ?? "");
+            response.headers =
+                headers instanceof Headers ? headers : new Headers(headers ?? {});
+            return response;
+        };
+        const responseInterface = function Response() {
+            throw new TypeError("Illegal constructor");
+        };
+        Object.defineProperty(responseInterface, "name", {
+            value: "Response",
+            configurable: true,
+        });
+        responseInterface.prototype = responsePrototype;
+        globalThis.Response = responseInterface;
+        globalThis.__blitz_make_response = makeResponse;
+    }
+
     // `sessionStorage` / `localStorage`: in-memory Web Storage implementations
     // (the standard getItem/setItem/removeItem/clear/key/length surface).
     // Values live for the lifetime of the document; a persistent backend can
@@ -568,6 +669,7 @@ impl ScriptRuntime {
             modules: RefCell::new(HashMap::new()),
         });
         let ctx = DomCtx::new(doc);
+        ctx.state.borrow_mut().base_url = base_url.cloned();
         // Share the runtime's clock with boa so that `Date` observes the same
         // (possibly virtual) time as timers
         let clock = ctx.state.borrow().clock.clone();
@@ -646,6 +748,7 @@ impl ScriptRuntime {
             request_animation_frame,
         );
         register_global_fn(&mut context, "cancelAnimationFrame", 1, clear_timer);
+        register_global_fn(&mut context, "fetch", 2, js_fetch);
         register_global_fn(
             &mut context,
             "addEventListener",
@@ -888,6 +991,59 @@ impl ScriptRuntime {
             }
         }
         self.run_jobs("timer microtasks");
+        true
+    }
+
+    /// Settle `fetch()` promises whose network responses have arrived. Called
+    /// from the document poll loop, on the same thread as the JS context.
+    pub fn drain_fetch_queue(&mut self) -> bool {
+        let completions: Vec<FetchCompletion> = {
+            let queue = self.ctx.state.borrow().fetch_queue.clone();
+            let mut queue = queue.lock().expect("fetch queue lock poisoned");
+            queue.drain(..).collect()
+        };
+        if completions.is_empty() {
+            return false;
+        }
+        for completion in completions {
+            let pending = self
+                .ctx
+                .state
+                .borrow_mut()
+                .fetch_pending
+                .remove(&completion.id);
+            let Some(pending) = pending else {
+                continue;
+            };
+            if completion.status == 0 {
+                let error = JsError::from(JsNativeError::typ().with_message(format!(
+                    "network error fetching {}: request failed",
+                    completion.final_url
+                )));
+                match error.into_opaque(&mut self.context) {
+                    Ok(value) => {
+                        if let Err(error) =
+                            pending
+                                .reject
+                                .call(&JsValue::undefined(), &[value], &mut self.context)
+                        {
+                            report_js_error(&self.ctx, "fetch", &error);
+                        }
+                    }
+                    Err(error) => report_js_error(&self.ctx, "fetch", &error),
+                }
+            } else {
+                let response = make_response_object(&mut self.context, &completion);
+                if let Err(error) = pending.resolve.call(
+                    &JsValue::undefined(),
+                    &[response.into()],
+                    &mut self.context,
+                ) {
+                    report_js_error(&self.ctx, "fetch", &error);
+                }
+            }
+        }
+        self.run_jobs("fetch microtasks");
         true
     }
 
@@ -1317,6 +1473,220 @@ fn timer_args(
         Duration::from_secs_f64(delay_ms / 1000.0),
         rest,
     )))
+}
+
+/// Deliver a completed `fetch()` response to the UI thread for promise settlement.
+struct FetchNetHandler {
+    id: usize,
+    queue: Arc<Mutex<VecDeque<FetchCompletion>>>,
+    wake: Arc<dyn ShellProvider>,
+}
+
+impl FetchNetHandler {
+    fn finish(self: Box<Self>, status: u16, resolved_url: String, bytes: Bytes) {
+        self.queue
+            .lock()
+            .expect("fetch queue lock poisoned")
+            .push_back(FetchCompletion {
+                id: self.id,
+                status,
+                final_url: resolved_url,
+                body: bytes.to_vec(),
+            });
+        self.wake.request_redraw();
+    }
+}
+
+impl NetHandler for FetchNetHandler {
+    fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes) {
+        self.finish(200, resolved_url, bytes);
+    }
+
+    fn bytes_with_status(self: Box<Self>, status: u16, resolved_url: String, bytes: Bytes) {
+        self.finish(status, resolved_url, bytes);
+    }
+}
+
+/// `fetch(input, init)` via the document's `NetProvider`.
+///
+/// Returns a promise which settles on the next document poll after the
+/// provider delivers the response. A status of `0` (provider-reported network
+/// failure) rejects the promise; HTTP error statuses resolve normally, as in
+/// browsers.
+fn js_fetch(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let Some(input) = args.first() else {
+        return Err(JsNativeError::typ()
+            .with_message("fetch requires an input URL or Request")
+            .into());
+    };
+
+    // Accept a string or a URL instance (its `href` property).
+    let input_url = if input.is_string() {
+        input.to_string(context)?.to_std_string_escaped()
+    } else if let Some(object) = input.as_object() {
+        let href = object.get(js_string!("href"), context)?;
+        if href.is_undefined() {
+            return Err(JsNativeError::typ()
+                .with_message("fetch input must be a string, URL, or Request")
+                .into());
+        }
+        href.to_string(context)?.to_std_string_escaped()
+    } else {
+        return Err(JsNativeError::typ()
+            .with_message("fetch input must be a string, URL, or Request")
+            .into());
+    };
+
+    let init = args.get(1).and_then(JsValue::as_object);
+    let method_value = init
+        .as_ref()
+        .and_then(|object| object.get(js_string!("method"), context).ok())
+        .filter(|value| !value.is_undefined() && !value.is_null());
+    let method = match method_value {
+        Some(value) => {
+            Method::from_bytes(value.to_string(context)?.to_std_string_escaped().as_bytes())
+                .unwrap_or(Method::GET)
+        }
+        None => Method::GET,
+    };
+
+    let mut headers = HeaderMap::new();
+    if let Some(headers_object) = init
+        .as_ref()
+        .and_then(|object| object.get(js_string!("headers"), context).ok())
+        .and_then(|value| value.as_object())
+    {
+        for key in headers_object.own_property_keys(context)? {
+            let PropertyKey::String(name) = key else {
+                continue;
+            };
+            let value = headers_object.get(name.clone(), context)?;
+            if value.is_undefined() || value.is_null() {
+                continue;
+            }
+            let value = value.to_string(context)?.to_std_string_escaped();
+            if let Ok(name) = HeaderName::from_bytes(name.to_std_string_escaped().as_bytes())
+                && let Ok(value) = HeaderValue::from_str(&value)
+            {
+                headers.insert(name, value);
+            }
+        }
+    }
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+
+    let body = match init
+        .as_ref()
+        .and_then(|object| object.get(js_string!("body"), context).ok())
+    {
+        Some(value) if value.is_string() => Body::Bytes(Bytes::from(
+            value
+                .to_string(context)?
+                .to_std_string_escaped()
+                .into_bytes(),
+        )),
+        _ => Body::Empty,
+    };
+
+    let url = {
+        let state = ctx.state.borrow();
+        Url::parse(&input_url).or_else(|_| {
+            state
+                .base_url
+                .as_ref()
+                .and_then(|base| base.join(&input_url).ok())
+                .ok_or_else(|| {
+                    JsNativeError::typ()
+                        .with_message(format!("could not resolve fetch URL {input_url:?}"))
+                })
+        })
+    }
+    .map_err(JsError::from)?;
+
+    let (promise, resolvers) = JsPromise::new_pending(context);
+
+    let mut state = ctx.state.borrow_mut();
+    let id = state.next_fetch_id;
+    state.next_fetch_id += 1;
+    state.fetch_pending.insert(
+        id,
+        PendingFetch {
+            resolve: resolvers.resolve,
+            reject: resolvers.reject,
+        },
+    );
+    let queue = state.fetch_queue.clone();
+    drop(state);
+
+    let (net_provider, doc_id, shell_provider) = {
+        let doc = ctx.doc.borrow();
+        (
+            doc.net_provider.clone(),
+            doc.id(),
+            doc.shell_provider.clone(),
+        )
+    };
+
+    if net_provider.is_noop() {
+        if let Some(pending) = ctx.state.borrow_mut().fetch_pending.remove(&id) {
+            let error = JsError::from(
+                JsNativeError::typ().with_message("fetch is unavailable: no network provider"),
+            )
+            .into_opaque(context)?;
+            pending
+                .reject
+                .call(&JsValue::undefined(), &[error], context)?;
+        }
+        let _ = context.run_jobs();
+        return Ok(promise.into());
+    }
+
+    let mut request = Request::get(url);
+    request.method = method;
+    request.headers = headers;
+    request.content_type = content_type;
+    request.body = body;
+    net_provider.fetch(
+        doc_id,
+        request,
+        Box::new(FetchNetHandler {
+            id,
+            queue,
+            wake: shell_provider,
+        }),
+    );
+
+    Ok(promise.into())
+}
+
+/// Build the `Response`-shaped object handed to settled fetch promises,
+/// using the bootstrap helper defined in JavaScript.
+fn make_response_object(context: &mut Context, completion: &FetchCompletion) -> JsObject {
+    let helper = context
+        .global_object()
+        .get(js_string!("__blitz_make_response"), context)
+        .expect("fetch bootstrap helper is registered");
+    let body = String::from_utf8_lossy(&completion.body);
+    let headers = ObjectInitializer::new(context).build();
+    helper
+        .as_object()
+        .expect("fetch bootstrap helper is an object")
+        .call(
+            &JsValue::undefined(),
+            &[
+                JsValue::from(f64::from(completion.status)),
+                JsValue::from(JsString::from(completion.final_url.clone())),
+                JsValue::from(JsString::from(body.into_owned())),
+                headers.into(),
+            ],
+            context,
+        )
+        .expect("fetch bootstrap helper returned a response")
+        .as_object()
+        .expect("fetch bootstrap helper returned an object")
 }
 
 fn set_timeout(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {

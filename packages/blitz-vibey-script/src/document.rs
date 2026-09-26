@@ -453,6 +453,7 @@ impl Document for ScriptDocument {
         }
 
         ran |= self.runtime.run_due_timers();
+        ran |= self.runtime.drain_fetch_queue();
         self.arm_timer_thread();
         ran
     }

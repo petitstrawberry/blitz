@@ -78,10 +78,7 @@ fn session_and_local_storage_expose_web_storage_apis() {
         </body></html>
         "#,
     );
-    assert_eq!(
-        text_of_selector(&doc, "#root"),
-        "dark|light||1|theme|true"
-    );
+    assert_eq!(text_of_selector(&doc, "#root"), "dark|light||1|theme|true");
 }
 
 #[test]

@@ -2,12 +2,15 @@
 //! JavaScript side (native functions registered with the Boa `Context`).
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use blitz_dom::{BaseDocument, NodeId};
 use boa_engine::object::JsObject;
+use boa_engine::object::builtins::JsFunction;
 use boa_engine::{Finalize, JsData, Trace};
+use url::Url;
 
 use crate::clock::ScriptClock;
 use crate::timers::TimerQueue;
@@ -52,6 +55,20 @@ pub(crate) struct Listener {
 
 pub(crate) type ListenerMap = HashMap<String, Vec<Listener>>;
 
+/// A `fetch()` promise awaiting its network response.
+pub(crate) struct PendingFetch {
+    pub resolve: JsFunction,
+    pub reject: JsFunction,
+}
+
+/// A completed `fetch()` request, delivered by the network thread.
+pub(crate) struct FetchCompletion {
+    pub id: usize,
+    pub status: u16,
+    pub final_url: String,
+    pub body: Vec<u8>,
+}
+
 /// State owned by the script runtime but shared (via `Rc`) with the native
 /// functions exposed to JavaScript.
 ///
@@ -68,6 +85,13 @@ pub(crate) struct RuntimeState {
     /// by the *same* JS object: scripts rely on object identity (`===`) and on
     /// expando properties persisting across accesses.
     pub node_wrappers: HashMap<NodeId, JsObject>,
+    /// Pending `fetch()` requests, keyed by request id.
+    pub fetch_pending: HashMap<usize, PendingFetch>,
+    /// Monotonic id source for `fetch()` requests.
+    pub next_fetch_id: usize,
+    /// Completions delivered by the network thread, drained on the UI thread
+    /// by [`ScriptRuntime::drain_fetch_queue`](crate::runtime::ScriptRuntime::drain_fetch_queue).
+    pub fetch_queue: Arc<Mutex<VecDeque<FetchCompletion>>>,
     /// Event listeners registered on nodes, keyed by node id then event type.
     pub node_listeners: HashMap<NodeId, ListenerMap>,
     /// Event listeners registered on `window`.
@@ -86,6 +110,8 @@ pub(crate) struct RuntimeState {
     /// listeners, timer callbacks and promise jobs). Drained with
     /// [`ScriptDocument::take_js_errors`](crate::ScriptDocument::take_js_errors).
     pub uncaught_errors: Vec<String>,
+    /// The document's base URL, used to resolve relative `fetch()` URLs.
+    pub base_url: Option<Url>,
 }
 
 /// Maximum number of errors stored in [`RuntimeState::uncaught_errors`] between

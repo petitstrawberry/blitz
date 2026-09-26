@@ -33,6 +33,14 @@ pub trait NetProvider: Send + Sync + 'static {
 /// the NetCallack with the result.
 pub trait NetHandler: Send + Sync + 'static {
     fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes);
+
+    /// Like [`bytes`](NetHandler::bytes), but carrying the HTTP status code
+    /// for providers which know it. Providers should prefer this method so
+    /// that handlers can distinguish network errors (status `0`) from empty
+    /// successful responses.
+    fn bytes_with_status(self: Box<Self>, _status: u16, resolved_url: String, bytes: Bytes) {
+        self.bytes(resolved_url, bytes);
+    }
 }
 
 /// A callback which gets called every time a network request completes
